@@ -10,13 +10,16 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <string.h>
-#define MSG_SIZE 512
+#define FILE_NAME_SIZE 255
 #define DATA_SIZE 512
 #define HEADER_SIZE 4
+#define MAX_SIZE 516
+#define WRQ_OPCODE 2
 
 struct WRQ_pck {
 	unsigned short opcode;
-	char filename_&_mode[SIZE_MSG];
+	char filename[FILE_NAME_SIZE];
+	char mode[FILE_NAME_SIZE];
 	
 } __attribute__((packed));
 
@@ -39,21 +42,23 @@ int main(int argc, char* argv[])
 	struct sockaddr_in my_addr = { 0 };
 	struct sockaddr_in client_addr = { 0 };
 	struct WRQ_pck my_WRQ_pck;
-	char buffer[DATA_SIZE + (MSG_SIZE*2)];
-	char filename[MSG_SIZE] = { 0 };
-	char mode[MSG_SIZE] = { 0 };
-	int error_counter;
+	char buffer[MAX_SIZE];
+	char filename[FILE_NAME_SIZE] = { 0 };
+	char mode[FILE_NAME_SIZE] = { 0 };
+	int timeoutExpiredCount;
 	struct ACK_pck my_ACK_pck;
+	struct DATA_pck my_DATA_pck;
+	strcu
 
 	if (argc < 2) {
-		fprintf(stderr, "TTFTP_ERROR: no port provided, please write: ./ttftps <Port #>\n");
+		perror("TTFTP_ERROR: no port provided, please write: ./ttftps <Port #>\n");
 		exit(1);
 	}
 
 	int server_socketfd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
 	if (server_socketfd < 0)
 	{
-		fprintf(stderr, "TTFTP_ERROR: opening socket\n");
+		perror("TTFTP_ERROR: opening socket\n");
 		exit(1);
 	}
 
@@ -67,7 +72,7 @@ int main(int argc, char* argv[])
 
 	if (bind(server_socketfd, (struct sockaddr*) & my_addr, sizeof(my_addr)) < 0)
 	{
-		fprintf(stderr, "TTFTP_ERROR: on binding\n");
+		perror("TTFTP_ERROR: on binding\n");
 		exit(1);
 	}
 
@@ -75,26 +80,26 @@ int main(int argc, char* argv[])
 	{
 		unsigned int client_addr_len = sizeof(client_addr);
 
-		int recvMsgSize = recvfrom(server_socketfd, &my_WRQ_pck, 2 + MSG_SIZE, 0, (struct sockaddr*) & client_addr, &client_addr_len);
+		int recvMsgSize = recvfrom(server_socketfd, buffer, MAX_SIZE, 0, (struct sockaddr*) & client_addr, &client_addr_len);
 		if (recvMsgSize < 0)
 		{
-			fprintf(stderr, "TTFTP_ERROR: recvfrom - error occurred\n");
+			perror("TTFTP_ERROR: recvfrom - error occurred\n");
 			emptySocket(server_socketfd);
 			exit(1);
 		}
-
-		strcpy(filename, my_WRQ_pck.filename);
-		strcpy(mode, my_WRQ_pck.filenameAndMode + strlen(filename) + 1);
-		if (my_WRQ_pck.opcode != 2)
+		my_WRQ_pck.opcode = *(short*)buffer;
+		strcpy(my_WRQ_pck.filename, (buffer+2),255);
+		strcpy(my_WRQ_pck.mode,strlen(buffer) + 1);
+		if (ntohs(my_WRQ_pck.opcode) != WRQ_OPCODE)
 		{
-			fprintf(stderr,"TTFTP_ERROR: Error in recvfrom - opcode not of WRQ\n");
+			perror("TTFTP_ERROR: Error in recvfrom - opcode not of WRQ\n");
 			printf("RECVFAIL\n");
 			emptySocket(server_socketfd);
 			continue;
 		}
 		if (strcmp(mode, "octet") != 0)
 		{
-			fprintf(stderr,"TTFTP_ERROR: Error in recvfrom - mode is not octet\n");
+			perror("TTFTP_ERROR: Error in recvfrom - mode is not octet\n");
 			printf("RECVFAIL\n");
 			emptySocket(server_socketfd);
 			continue;
@@ -104,7 +109,7 @@ int main(int argc, char* argv[])
 		FILE* fp = fopen(filename, "w");
 		if (fp == NULL)
 		{
-			fprintf(stderr,"TTFTP_ERROR: Error in opening file\n");
+			perror("TTFTP_ERROR: Error in opening file\n");
 			emptySocket(server_socketfd);
 			exit(1);
 		}
@@ -132,18 +137,49 @@ int main(int argc, char* argv[])
 				{
 					// TODO: Wait WAIT_FOR_PACKET_TIMEOUT to see if something appears
 					// for us at the socket (we are waiting for DATA)
-
-					if ()// TODO: if there was something at the socket and
+					fd_set read_fds;
+					struct timeval timeOut = { 0 };
+					timeOut.tv_sec = WAIT_FOR_PACKET_TIMEOUT;
+					waitForPacket.tv_usec = 0;
+					FD_ZERO(&read_fds);
+					FD_SET(server_socketfd, &read_fds);
+					int check_socket = select(server_socketfd + 1, &read_fds, NULL, NULL, &timeOut);
+					
+					if (check_socket>0)// TODO: if there was something at the socket and
 					// we are here not because of a timeout
 					{
 						// TODO: Read the DATA packet from the socket (at
 						// least we hope this is a DATA packet)
+						int received_bytes = recvfrom(server_socketfd, &my_DATA_pck, DATA_SIZE + HEADER_SIZE, 0, (struct sockaddr*) & client_addr, &client_addr_len);
+						
+						
+						//printf("size data %d\n", (int)strlen(myData.data));
+						if (received_bytes < 0)
+						{
+							perror("TTFTP_ERROR:Error in recvfrom\n");
+							fclose(fp);
+							emptySocket(server_socketfd);
+							exit(1);
+						}
+						myData.opcode = ntohs(myData.opcode);
+						myData.blockNum = ntohs(myData.blockNum);
+						break;
 					}
-					if (...) // TODO: Time out expired while waiting for data
+					if (check_socket ==0) // TODO: Time out expired while waiting for data
 					 // to appear at the socket
 					{
 						//TODO: Send another ACK for the last packet
+						printf("FLOWERROR: waiting for data..\n");
+						if (sendto(server_socketfd, (void*)&my_ACK_pck, sizeof(my_ACK_pck), 0, (struct sockaddr*) & client_addr, client_addr_len) < 0)
+						{
+							perror("TTFTP_ERROR: Error in sendto\n");
+							fclose(fp);
+							emptySocket(server_socketfd);
+							exit(1);
+						}
+						printf("OUT:ACK,%d\n", my_ACK_pck.blockNum);
 						timeoutExpiredCount++;
+						
 					}
 
 					if (timeoutExpiredCount >= NUMBER_OF_FAILURES)
@@ -151,7 +187,7 @@ int main(int argc, char* argv[])
 						// FATAL ERROR BAIL OUT
 					}
 
-				} while (...) // TODO: Continue while some socket was ready
+				} while (received_bytes<0) // TODO: Continue while some socket was ready
 				// but recvfrom somehow failed to read the data
 
 					if (...) // TODO: We got something else but DATA
